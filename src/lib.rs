@@ -61,6 +61,21 @@ impl<T> Lock<T> {
 }
 
 impl<T: ?Sized> Lock<T> {
+    pub fn try_lock<'a>(&'a self, slot: &'a mut Slot) -> Option<Guard<'a, T>> {
+        slot.next = AtomicPtr::new(ptr::null_mut());
+
+        if self.queue.compare_and_swap(ptr::null_mut(), slot, Ordering::Relaxed).is_null() {
+            fence(Ordering::Acquire);
+
+            Some(Guard {
+                lock: self,
+                slot: slot
+            })
+        } else {
+            None
+        }
+    }
+
     pub fn lock<'a>(&'a self, slot: &'a mut Slot) -> Guard<'a, T> {
         slot.next = AtomicPtr::new(ptr::null_mut());
         let pred = self.queue.swap(slot, Ordering::Relaxed);
@@ -184,6 +199,13 @@ mod test {
         }
         let mut slot = Slot::new();
         assert_eq!(*LOCK.lock(&mut slot), ITERS * CONCURRENCY * 2);
+    }
+
+    #[test]
+    fn try_lock() {
+        let mut slot = Slot::new();
+        let m = Lock::new(());
+        *m.try_lock(&mut slot).unwrap() = ();
     }
 
     #[test]
