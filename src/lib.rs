@@ -5,7 +5,7 @@
 use core::cell::UnsafeCell;
 use core::ops::{Deref, DerefMut};
 use core::ptr;
-use core::sync::atomic::{AtomicBool, AtomicPtr, fence, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 
 pub struct Slot {
     next: AtomicPtr<AtomicBool>
@@ -64,9 +64,7 @@ impl<T: ?Sized> Lock<T> {
     pub fn try_lock<'a>(&'a self, slot: &'a mut Slot) -> Option<Guard<'a, T>> {
         slot.next = AtomicPtr::new(ptr::null_mut());
 
-        if self.queue.compare_and_swap(ptr::null_mut(), slot, Ordering::Relaxed).is_null() {
-            fence(Ordering::Acquire);
-
+        if self.queue.compare_and_swap(ptr::null_mut(), slot, Ordering::SeqCst).is_null() {
             Some(Guard {
                 lock: self,
                 slot: slot
@@ -78,16 +76,15 @@ impl<T: ?Sized> Lock<T> {
 
     pub fn lock<'a>(&'a self, slot: &'a mut Slot) -> Guard<'a, T> {
         slot.next = AtomicPtr::new(ptr::null_mut());
-        let pred = self.queue.swap(slot, Ordering::Relaxed);
+        let pred = self.queue.swap(slot, Ordering::SeqCst);
         if !pred.is_null() {
             let pred = unsafe { &*pred };
             let locked = AtomicBool::new(true);
-            pred.next.store(&locked as *const _ as *mut _, Ordering::Relaxed);
-            while locked.load(Ordering::Relaxed) {
+            pred.next.store(&locked as *const _ as *mut _, Ordering::SeqCst);
+            while locked.load(Ordering::SeqCst) {
                 pause();
             }
         }
-        fence(Ordering::Acquire);
 
         Guard {
             lock: self,
