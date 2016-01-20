@@ -12,17 +12,17 @@ pub struct Slot {
 }
 
 pub struct Guard<'a, T: ?Sized + 'a> {
-    lock: &'a Lock<T>,
+    lock: &'a Mutex<T>,
     slot: &'a Slot
 }
 
-pub struct Lock<T: ?Sized> {
+pub struct Mutex<T: ?Sized> {
     queue: AtomicPtr<Slot>,
     data: UnsafeCell<T>
 }
 
-unsafe impl<T: Send> Sync for Lock<T> { }
-unsafe impl<T: Send> Send for Lock<T> { }
+unsafe impl<T: Send> Sync for Mutex<T> { }
+unsafe impl<T: Send> Send for Mutex<T> { }
 
 
 /// Do something to wait in spinlocks and use less CPU
@@ -45,9 +45,9 @@ impl Slot {
     }
 }
 
-impl<T> Lock<T> {
-    pub const fn new(value: T) -> Lock<T> {
-        Lock {
+impl<T> Mutex<T> {
+    pub const fn new(value: T) -> Mutex<T> {
+        Mutex {
             queue: AtomicPtr::new(ptr::null_mut()),
             data: UnsafeCell::new(value)
         }
@@ -60,7 +60,7 @@ impl<T> Lock<T> {
     }
 }
 
-impl<T: ?Sized> Lock<T> {
+impl<T: ?Sized> Mutex<T> {
     pub fn try_lock<'a>(&'a self, slot: &'a mut Slot) -> Option<Guard<'a, T>> {
         slot.next = AtomicPtr::new(ptr::null_mut());
 
@@ -139,7 +139,7 @@ impl<'a, T: ?Sized> Drop for Guard<'a, T> {
 mod test {
     extern crate std;
 
-    use super::{Lock, Slot};
+    use super::{Mutex, Slot};
 
     // Mostly stoled from the Rust standard Mutex implementation's tests, so
 
@@ -163,14 +163,14 @@ mod test {
     #[test]
     fn smoke() {
         let mut slot = Slot::new();
-        let m = Lock::new(());
+        let m = Mutex::new(());
         drop(m.lock(&mut slot));
         drop(m.lock(&mut slot));
     }
 
     #[test]
     fn lots_and_lots() {
-        static LOCK: Lock<u32> = Lock::new(0);
+        static LOCK: Mutex<u32> = Mutex::new(0);
         const ITERS: u32 = 1000;
         const CONCURRENCY: u32 = 3;
 
@@ -201,13 +201,13 @@ mod test {
     #[test]
     fn try_lock() {
         let mut slot = Slot::new();
-        let m = Lock::new(());
+        let m = Mutex::new(());
         *m.try_lock(&mut slot).unwrap() = ();
     }
 
     #[test]
     fn test_into_inner() {
-        let m = Lock::new(NonCopy(10));
+        let m = Mutex::new(NonCopy(10));
         assert_eq!(m.into_inner(), NonCopy(10));
     }
 
@@ -220,7 +220,7 @@ mod test {
             }
         }
         let num_drops = Arc::new(AtomicUsize::new(0));
-        let m = Lock::new(Foo(num_drops.clone()));
+        let m = Mutex::new(Foo(num_drops.clone()));
         assert_eq!(num_drops.load(Ordering::SeqCst), 0);
         {
             let _inner = m.into_inner();
@@ -231,7 +231,7 @@ mod test {
 
     #[test]
     fn test_get_mut() {
-        let mut m = Lock::new(NonCopy(10));
+        let mut m = Mutex::new(NonCopy(10));
         *m.get_mut() = NonCopy(20);
         assert_eq!(m.into_inner(), NonCopy(20));
     }
@@ -240,8 +240,8 @@ mod test {
     fn test_lock_arc_nested() {
         // Tests nested locks and access
         // to underlying data.
-        let arc = Arc::new(Lock::new(1));
-        let arc2 = Arc::new(Lock::new(arc));
+        let arc = Arc::new(Mutex::new(1));
+        let arc2 = Arc::new(Mutex::new(arc));
         let (tx, rx) = channel();
         let _t = thread::spawn(move|| {
             let mut slot1 = Slot::new();
@@ -257,11 +257,11 @@ mod test {
 
     #[test]
     fn test_lock_arc_access_in_unwind() {
-        let arc = Arc::new(Lock::new(1));
+        let arc = Arc::new(Mutex::new(1));
         let arc2 = arc.clone();
         let _ = thread::spawn(move|| -> () {
             struct Unwinder {
-                i: Arc<Lock<i32>>,
+                i: Arc<Mutex<i32>>,
             }
             impl Drop for Unwinder {
                 fn drop(&mut self) {
@@ -280,7 +280,7 @@ mod test {
     #[test]
     fn test_lock_unsized() {
         let mut slot = Slot::new();
-        let lock: &Lock<[i32]> = &Lock::new([1, 2, 3]);
+        let lock: &Mutex<[i32]> = &Mutex::new([1, 2, 3]);
         {
             let b = &mut *lock.lock(&mut slot);
             b[0] = 4;
