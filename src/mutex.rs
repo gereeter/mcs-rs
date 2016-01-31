@@ -9,11 +9,66 @@ pub struct Slot {
     next: AtomicPtr<AtomicBool>
 }
 
+/// An RAII implementation of a "scoped lock" of a mutex. When this structure is
+/// dropped (falls out of scope), the lock will be unlocked.
+///
+/// The data protected by the mutex can be access through this guard via its
+/// `Deref` and `DerefMut` implementations
+#[must_use]
 pub struct Guard<'a, T: ?Sized + 'a> {
     lock: &'a Mutex<T>,
     slot: &'a Slot
 }
 
+/// A mutual exclusion primitive useful for protecting shared data
+///
+/// This mutex will block threads waiting for the lock to become available. The
+/// mutex can also be statically initialized or created via a `new`
+/// constructor. Each mutex has a type parameter which represents the data that
+/// it is protecting. The data can only be accessed through the RAII guards
+/// returned from `lock` and `try_lock`, which guarantees that the data is only
+/// ever accessed when the mutex is locked.
+///
+/// # Examples
+///
+/// ```
+/// use std::sync::Arc;
+/// use std::thread;
+/// use std::sync::mpsc::channel;
+/// use mcs::{Mutex, Slot};
+///
+/// const N: usize = 10;
+///
+/// // Spawn a few threads to increment a shared variable (non-atomically), and
+/// // let the main thread know once all increments are done.
+/// //
+/// // Here we're using an Arc to share memory among threads, and the data inside
+/// // the Arc is protected with a mutex.
+/// let data = Arc::new(Mutex::new(0));
+///
+/// let (tx, rx) = channel();
+/// for _ in 0..10 {
+///     let (data, tx) = (data.clone(), tx.clone());
+///     thread::spawn(move || {
+///         let mut slot = Slot::new();
+///
+///         // The shared state can only be accessed once the lock is held.
+///         // Our non-atomic increment is safe because we're the only thread
+///         // which can access the shared state when the lock is held.
+///         //
+///         // We unwrap() the return value to assert that we are not expecting
+///         // threads to ever fail while holding the lock.
+///         let mut data = data.lock(&mut slot);
+///         *data += 1;
+///         if *data == N {
+///             tx.send(()).unwrap();
+///         }
+///         // the lock is unlocked here when `data` goes out of scope.
+///     });
+/// }
+///
+/// rx.recv().unwrap();
+/// ```
 pub struct Mutex<T: ?Sized> {
     queue: AtomicPtr<Slot>,
     data: UnsafeCell<T>
@@ -31,6 +86,7 @@ impl Slot {
 }
 
 impl<T> Mutex<T> {
+    /// Creates a new mutex in an unlocked state ready for use.
     pub const fn new(value: T) -> Mutex<T> {
         Mutex {
             queue: AtomicPtr::new(ptr::null_mut()),
@@ -38,6 +94,7 @@ impl<T> Mutex<T> {
         }
     }
 
+    /// Consumes this mutex, returning the underlying data.
     pub fn into_inner(self) -> T {
         unsafe {
             self.data.into_inner()
@@ -46,19 +103,32 @@ impl<T> Mutex<T> {
 }
 
 impl<T: ?Sized> Mutex<T> {
-    pub fn try_lock<'a>(&'a self, slot: &'a mut Slot) -> Option<Guard<'a, T>> {
+    /// Attempts to acquire this lock.
+    ///
+    /// If the lock could not be acquired at this time, then `Err` is returned.
+    /// Otherwise, an RAII guard is returned. The lock will be unlocked when the
+    /// guard is dropped.
+    ///
+    /// This function does not block.
+    pub fn try_lock<'a>(&'a self, slot: &'a mut Slot) -> Result<Guard<'a, T>, ()> {
         slot.next = AtomicPtr::new(ptr::null_mut());
 
         if self.queue.compare_and_swap(ptr::null_mut(), slot, Ordering::AcqRel).is_null() {
-            Some(Guard {
+            Ok(Guard {
                 lock: self,
                 slot: slot
             })
         } else {
-            None
+            Err(())
         }
     }
 
+    /// Acquires a mutex, blocking the current thread until it is able to do so.
+    ///
+    /// This function will block the local thread until it is available to acquire
+    /// the mutex. Upon returning, the thread is the only thread with the mutex
+    /// held. An RAII guard is returned to allow scoped unlock of the lock. When
+    /// the guard goes out of scope, the mutex will be unlocked.
     pub fn lock<'a>(&'a self, slot: &'a mut Slot) -> Guard<'a, T> {
         slot.next = AtomicPtr::new(ptr::null_mut());
         let pred = self.queue.swap(slot, Ordering::AcqRel);
@@ -78,6 +148,10 @@ impl<T: ?Sized> Mutex<T> {
         }
     }
 
+    /// Returns a mutable reference to the underlying data.
+    ///
+    /// Since this call borrows the `Mutex` mutably, no actual locking needs to
+    /// take place---the mutable borrow statically guarantees no locks exist.
     pub fn get_mut(&mut self) -> &mut T {
         unsafe { &mut *self.data.get() }
     }
