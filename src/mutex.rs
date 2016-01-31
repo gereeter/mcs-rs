@@ -1,7 +1,7 @@
 use core::cell::UnsafeCell;
 use core::ops::{Deref, DerefMut};
 use core::ptr;
-use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering, fence};
 
 use pause::pause;
 
@@ -49,7 +49,7 @@ impl<T: ?Sized> Mutex<T> {
     pub fn try_lock<'a>(&'a self, slot: &'a mut Slot) -> Option<Guard<'a, T>> {
         slot.next = AtomicPtr::new(ptr::null_mut());
 
-        if self.queue.compare_and_swap(ptr::null_mut(), slot, Ordering::SeqCst).is_null() {
+        if self.queue.compare_and_swap(ptr::null_mut(), slot, Ordering::AcqRel).is_null() {
             Some(Guard {
                 lock: self,
                 slot: slot
@@ -61,14 +61,15 @@ impl<T: ?Sized> Mutex<T> {
 
     pub fn lock<'a>(&'a self, slot: &'a mut Slot) -> Guard<'a, T> {
         slot.next = AtomicPtr::new(ptr::null_mut());
-        let pred = self.queue.swap(slot, Ordering::SeqCst);
+        let pred = self.queue.swap(slot, Ordering::AcqRel);
         if !pred.is_null() {
             let pred = unsafe { &*pred };
             let locked = AtomicBool::new(true);
-            pred.next.store(&locked as *const _ as *mut _, Ordering::SeqCst);
-            while locked.load(Ordering::SeqCst) {
+            pred.next.store(&locked as *const _ as *mut _, Ordering::Release);
+            while locked.load(Ordering::Relaxed) {
                 pause();
             }
+            fence(Ordering::Acquire);
         }
 
         Guard {
@@ -98,24 +99,26 @@ impl<'a, T: ?Sized> DerefMut for Guard<'a, T> {
 impl<'a, T: ?Sized> Drop for Guard<'a, T> {
     #[unsafe_destructor_blind_to_params]
     fn drop(&mut self) {
-        let succ = self.slot.next.load(Ordering::SeqCst);
+        let succ = self.slot.next.load(Ordering::Relaxed);
         if succ.is_null() {
             let slot_ptr = self.slot as *const _ as *mut _;
-            if self.lock.queue.compare_and_swap(slot_ptr, ptr::null_mut(), Ordering::SeqCst) != slot_ptr {
+            if self.lock.queue.compare_and_swap(slot_ptr, ptr::null_mut(), Ordering::Release) != slot_ptr {
                 let mut succ;
                 loop {
-                    succ = self.slot.next.load(Ordering::SeqCst);
+                    succ = self.slot.next.load(Ordering::Relaxed);
                     if !succ.is_null() {
                         break;
                     }
                     pause();
                 }
+                fence(Ordering::Acquire);
                 let succ = unsafe { &*succ };
-                succ.store(false, Ordering::SeqCst);
+                succ.store(false, Ordering::Release);
             }
         } else {
+            fence(Ordering::Acquire);
             let succ = unsafe { &*succ };
-            succ.store(false, Ordering::SeqCst);
+            succ.store(false, Ordering::Release);
         }
     }
 }
