@@ -173,27 +173,29 @@ impl<'a, T: ?Sized> DerefMut for Guard<'a, T> {
 impl<'a, T: ?Sized> Drop for Guard<'a, T> {
     #[unsafe_destructor_blind_to_params]
     fn drop(&mut self) {
-        let succ = self.slot.next.load(Ordering::Relaxed);
+        let mut succ = self.slot.next.load(Ordering::Relaxed);
         if succ.is_null() {
+            // No one has registered as waiting.
             let slot_ptr = self.slot as *const _ as *mut _;
-            if self.lock.queue.compare_and_swap(slot_ptr, ptr::null_mut(), Ordering::Release) != slot_ptr {
-                let mut succ;
-                loop {
-                    succ = self.slot.next.load(Ordering::Relaxed);
-                    if !succ.is_null() {
-                        break;
-                    }
-                    pause();
-                }
-                fence(Ordering::Acquire);
-                let succ = unsafe { &*succ };
-                succ.store(false, Ordering::Release);
+            if self.lock.queue.compare_and_swap(slot_ptr, ptr::null_mut(), Ordering::Release) == slot_ptr {
+                // No one was waiting.
+                return;
             }
-        } else {
-            fence(Ordering::Acquire);
-            let succ = unsafe { &*succ };
-            succ.store(false, Ordering::Release);
+
+            // Some thread is waiting, but hasn't registered yet. Spin waiting for them to register themselves.
+            loop {
+                succ = self.slot.next.load(Ordering::Relaxed);
+                if !succ.is_null() {
+                    break;
+                }
+                pause();
+            }
         }
+
+        // Announce to the next waiter that the lock is free.
+        fence(Ordering::Acquire);
+        let succ = unsafe { &*succ };
+        succ.store(false, Ordering::Release);
     }
 }
 
