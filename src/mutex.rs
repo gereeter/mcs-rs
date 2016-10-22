@@ -176,8 +176,7 @@ impl<'a, T: ?Sized> Drop for Guard<'a, T> {
         let mut succ = self.slot.next.load(Ordering::Relaxed);
         if succ.is_null() {
             // No one has registered as waiting.
-            let slot_ptr = self.slot as *const _ as *mut _;
-            if self.lock.queue.compare_and_swap(slot_ptr, ptr::null_mut(), Ordering::Release) == slot_ptr {
+            if self.lock.queue.compare_exchange(self.slot as *const _ as *mut _, ptr::null_mut(), Ordering::Release, Ordering::Relaxed).is_ok() {
                 // No one was waiting.
                 return;
             }
