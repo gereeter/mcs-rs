@@ -78,7 +78,15 @@ unsafe impl<T: Send> Sync for Mutex<T> { }
 unsafe impl<T: Send> Send for Mutex<T> { }
 
 impl Slot {
+    #[cfg(feature = "unstable")]
     pub const fn new() -> Slot {
+        Slot {
+            next: AtomicPtr::new(ptr::null_mut())
+        }
+    }
+
+    #[cfg(not(feature = "unstable"))]
+    pub fn new() -> Slot {
         Slot {
             next: AtomicPtr::new(ptr::null_mut())
         }
@@ -86,8 +94,18 @@ impl Slot {
 }
 
 impl<T> Mutex<T> {
+    #[cfg(feature = "unstable")]
     /// Creates a new mutex in an unlocked state ready for use.
     pub const fn new(value: T) -> Mutex<T> {
+        Mutex {
+            queue: AtomicPtr::new(ptr::null_mut()),
+            data: UnsafeCell::new(value)
+        }
+    }
+
+    #[cfg(not(feature = "unstable"))]
+    /// Creates a new mutex in an unlocked state ready for use.
+    pub fn new(value: T) -> Mutex<T> {
         Mutex {
             queue: AtomicPtr::new(ptr::null_mut()),
             data: UnsafeCell::new(value)
@@ -170,7 +188,37 @@ impl<'a, T: ?Sized> DerefMut for Guard<'a, T> {
     }
 }
 
+// Unforturnately, since just putting attributes on generic parameters is unstable, we have to duplicate the whole Drop impl
+#[cfg(feature = "unstable")]
 unsafe impl<'a, #[may_dangle] T: ?Sized> Drop for Guard<'a, T> {
+    fn drop(&mut self) {
+        let mut succ = self.slot.next.load(Ordering::Relaxed);
+        if succ.is_null() {
+            // No one has registered as waiting.
+            if self.lock.queue.compare_exchange(self.slot as *const _ as *mut _, ptr::null_mut(), Ordering::Release, Ordering::Relaxed).is_ok() {
+                // No one was waiting.
+                return;
+            }
+
+            // Some thread is waiting, but hasn't registered yet. Spin waiting for them to register themselves.
+            loop {
+                succ = self.slot.next.load(Ordering::Relaxed);
+                if !succ.is_null() {
+                    break;
+                }
+                pause();
+            }
+        }
+
+        // Announce to the next waiter that the lock is free.
+        fence(Ordering::Acquire);
+        let succ = unsafe { &*succ };
+        succ.store(false, Ordering::Release);
+    }
+}
+
+#[cfg(not(feature = "unstable"))]
+impl<'a, T: ?Sized> Drop for Guard<'a, T> {
     fn drop(&mut self) {
         let mut succ = self.slot.next.load(Ordering::Relaxed);
         if succ.is_null() {
@@ -199,8 +247,6 @@ unsafe impl<'a, #[may_dangle] T: ?Sized> Drop for Guard<'a, T> {
 
 #[cfg(test)]
 mod test {
-    extern crate std;
-
     use super::{Mutex, Slot};
 
     // Mostly stoled from the Rust standard Mutex implementation's tests, so
@@ -214,10 +260,10 @@ mod test {
     // option. This file may not be copied, modified, or distributed
     // except according to those terms.
 
-    use self::std::sync::Arc;
-    use self::std::sync::mpsc::channel;
-    use self::std::sync::atomic::{AtomicUsize, Ordering};
-    use self::std::thread;
+    use std::sync::Arc;
+    use std::sync::mpsc::channel;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::thread;
 
     #[derive(Eq, PartialEq, Debug)]
     struct NonCopy(i32);
@@ -232,7 +278,10 @@ mod test {
 
     #[test]
     fn lots_and_lots() {
-        static LOCK: Mutex<u32> = Mutex::new(0);
+        lazy_static! {
+            static ref LOCK: Mutex<u32> = Mutex::new(0);
+        }
+
         const ITERS: u32 = 1000;
         const CONCURRENCY: u32 = 3;
 

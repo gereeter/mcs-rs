@@ -6,3 +6,10 @@ authors = ["Jonathan S <gereeter+code@gmail.com>"]
 license = "MIT"
 repository = "https://github.com/gereeter/mcs-rs"
 keywords = ["spinlock", "mutex"]
+
+[features]
+unstable = []
+default = ["unstable"]
+
+[dev-dependencies]
+lazy_static = "0.2"
