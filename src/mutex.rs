@@ -170,8 +170,7 @@ impl<'a, T: ?Sized> DerefMut for Guard<'a, T> {
     }
 }
 
-impl<'a, T: ?Sized> Drop for Guard<'a, T> {
-    #[unsafe_destructor_blind_to_params]
+unsafe impl<'a, #[may_dangle] T: ?Sized> Drop for Guard<'a, T> {
     fn drop(&mut self) {
         let mut succ = self.slot.next.load(Ordering::Relaxed);
         if succ.is_null() {

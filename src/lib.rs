@@ -1,4 +1,4 @@
-#![feature(asm, const_fn, dropck_parametricity)]
+#![feature(asm, const_fn, generic_param_attrs, dropck_eyepatch)]
 
 #![no_std]
 
