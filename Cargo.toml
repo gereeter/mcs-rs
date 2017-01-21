@@ -1,11 +1,15 @@
 [package]
 name = "mcs"
-description = "MCS Spinlocks"
 version = "0.1.0"
 authors = ["Jonathan S <gereeter+code@gmail.com>"]
 license = "MIT"
 repository = "https://github.com/gereeter/mcs-rs"
+documentation = "https://docs.rs/mcs"
 keywords = ["spinlock", "mutex"]
+description = """
+Synchronization primitives based on Mellor-Crummey and Scott's (MCS)
+queueing spinlock. This library is usable without `std`.
+"""
 
 [features]
 unstable = []
