@@ -1,6 +1,6 @@
 [package]
 name = "mcs"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Jonathan S <gereeter+code@gmail.com>"]
 license = "MIT"
 repository = "https://github.com/gereeter/mcs-rs"
